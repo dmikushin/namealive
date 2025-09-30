@@ -1,0 +1,199 @@
+# .goreleaser.yml
+# GoReleaser configuration for automated releases
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: namealive
+    main: .
+    binary: namealive
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+      - freebsd
+      - netbsd
+      - openbsd
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - 386
+    goarm:
+      - 6
+      - 7
+    ignore:
+      - goos: darwin
+        goarch: 386
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: arm64
+      - goos: freebsd
+        goarch: arm
+      - goos: netbsd
+        goarch: arm
+      - goos: openbsd
+        goarch: arm
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+      - -X main.BuiltBy=goreleaser
+
+archives:
+  - id: namealive-archive
+    name_template: >-
+      namealive_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: 'Features'
+      regexp: '^feat:'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^fix:'
+      order: 1
+    - title: 'Performance'
+      regexp: '^perf:'
+      order: 2
+    - title: 'Refactoring'
+      regexp: '^refactor:'
+      order: 3
+    - title: 'Other changes'
+      order: 999
+
+release:
+  github:
+    owner: dmikushin
+    name: namealive
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"
+  footer: |
+    ## Installation
+
+    ### Via go install
+    ```bash
+    go install github.com/dmikushin/namealive@latest
+    ```
+
+    ### Download binary
+    Download the appropriate binary for your platform from the assets below.
+
+    ### Linux/macOS
+    ```bash
+    # Download and extract (replace VERSION and PLATFORM)
+    tar xzf namealive_VERSION_PLATFORM.tar.gz
+    sudo mv namealive /usr/local/bin/
+    sudo chmod +x /usr/local/bin/namealive
+    ```
+
+    ### Windows
+    Download the zip file, extract, and add to your PATH.
+
+    ## Quick Start
+    ```bash
+    # Scan default range
+    sudo namealive
+
+    # Scan specific range
+    sudo namealive -r 192.168.0.0/24
+    ```
+
+    ---
+    **Full Changelog**: https://github.com/dmikushin/namealive/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+dockers:
+  - image_templates:
+      - "ghcr.io/dmikushin/namealive:{{ .Tag }}"
+      - "ghcr.io/dmikushin/namealive:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source=https://github.com/dmikushin/namealive"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+brews:
+  - repository:
+      owner: dmikushin
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    folder: Formula
+    homepage: https://github.com/dmikushin/namealive
+    description: "High-performance network host discovery and identification tool"
+    license: "MIT"
+    test: |
+      system "#{bin}/namealive", "--version"
+    install: |
+      bin.install "namealive"
+
+nfpms:
+  - id: packages
+    package_name: namealive
+    homepage: https://github.com/dmikushin/namealive
+    description: "High-performance network host discovery and identification tool"
+    maintainer: Dmitry Mikushin <dmitry@kernelgen.org>
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    section: utils
+    priority: optional
+    recommends:
+      - iputils-ping
+    suggests:
+      - avahi-daemon
+    overrides:
+      deb:
+        dependencies:
+          - iputils-ping
+      rpm:
+        dependencies:
+          - iputils
+
+sboms:
+  - artifacts: archive

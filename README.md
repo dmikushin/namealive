@@ -1,52 +1,100 @@
 # NameAlive - Network Host Discovery Tool
 
-A utility for discovering active hosts in the network and retrieving their hostnames.
+[![Go Reference](https://pkg.go.dev/badge/github.com/dmikushin/namealive.svg)](https://pkg.go.dev/github.com/dmikushin/namealive)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dmikushin/namealive)](https://goreportcard.com/report/github.com/dmikushin/namealive)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Features
+High-performance network host discovery and identification tool using mDNS, NetBIOS, and SSH.
 
-- 🔍 Fast IP range scanning
-- 🚀 Parallel host connections for improved performance
-- 🔑 SSH key and password authentication support
-- 📊 Multiple output formats (table, JSON, CSV)
-- 📝 Extended host information (OS, uptime, MAC address)
-- ⚙️ Flexible CLI configuration
+## ✨ Features
 
-## Installation
+- 🚀 **Fast discovery** via mDNS (Linux/Mac) and NetBIOS (Windows)
+- 🔍 **Smart fallback** to SSH when needed
+- 🔑 **Flexible authentication** - SSH keys and passwords
+- 📊 **Multiple output formats** - table, JSON, CSV
+- 🎯 **Parallel scanning** with configurable concurrency
+- 📝 **Extended information** - OS, uptime, MAC address
+- 🔧 **Zero dependencies** - single binary
 
-### From Source
+## 📦 Installation
+
+### Via go install (recommended)
 
 ```bash
-git clone https://github.com/yourusername/namealive.git
-cd namealive
-go mod download
-go build -o namealive
-sudo cp namealive /usr/local/bin/  # Optional for global installation
+go install github.com/dmikushin/namealive@latest
 ```
 
-### Requirements
+The binary will be installed to `$GOPATH/bin/namealive` or `~/go/bin/namealive`.
 
-- Go 1.21 or higher
-- Root privileges or CAP_NET_RAW capability for ICMP ping
+### From source
 
-## Usage
+```bash
+git clone https://github.com/dmikushin/namealive.git
+cd namealive
+make build
+sudo make install  # Installs to /usr/local/bin
+```
 
-### Basic Usage
+### Download pre-built binary
+
+Download the latest release from [Releases](https://github.com/dmikushin/namealive/releases).
+
+```bash
+# Linux amd64
+wget https://github.com/dmikushin/namealive/releases/latest/download/namealive_linux_amd64.tar.gz
+tar xzf namealive_linux_amd64.tar.gz
+sudo mv namealive /usr/local/bin/
+
+# macOS
+wget https://github.com/dmikushin/namealive/releases/latest/download/namealive_darwin_amd64.tar.gz
+tar xzf namealive_darwin_amd64.tar.gz
+sudo mv namealive /usr/local/bin/
+```
+
+## 📋 Requirements
+
+- Go 1.21+ (for building from source)
+- Root privileges or CAP_NET_RAW for ICMP ping
+- Linux, macOS, or Windows
+
+## 🚀 Quick Start
 
 ```bash
 # Scan default range (192.168.1.1-192.168.1.250)
 sudo namealive
 
-# With specific user
-sudo namealive -u admin
-
-# Custom range
+# Scan specific range
 sudo namealive -r 10.0.0.1-10.0.0.100
 
 # CIDR notation
 sudo namealive -r 192.168.0.0/24
+
+# Without password prompt (SSH keys only)
+namealive --no-password
+
+# Export to JSON
+namealive --format json -o network.json
 ```
 
-### Command Line Options
+## 🎯 How It Works
+
+NameAlive uses a multi-protocol approach for maximum speed and compatibility:
+
+1. **ICMP Ping** - Checks if host is alive
+2. **mDNS Query** - Fast hostname resolution for Linux/macOS (Avahi/Bonjour)
+3. **NetBIOS Query** - Windows hostname resolution
+4. **SSH Fallback** - When fast methods fail
+
+```
+┌─────────┐     ┌──────┐     ┌─────────┐     ┌─────────┐     ┌─────┐
+│ IP Scan │────▶│ Ping │────▶│  mDNS   │────▶│ NetBIOS │────▶│ SSH │
+└─────────┘     └──────┘     │ (2 sec) │     │ (2 sec) │     │(opt)│
+                   │         └─────────┘     └─────────┘     └─────┘
+                   ▼
+                [Skip if not alive]
+```
+
+## 📊 Command Line Options
 
 ```
 Flags:
@@ -57,52 +105,52 @@ Flags:
       --timeout duration   Connection timeout (default 20s)
       --format string      Output format: table|json|csv (default "table")
   -o, --output string      Output file
-  -v, --verbose            Verbose mode with detailed logging
-      --extended           Show extended host information
-      --exclude strings    Exclude IP ranges (can specify multiple)
+  -v, --verbose            Verbose mode
+      --extended           Show extended information
+      --exclude strings    Exclude IP ranges
       --include-offline    Include offline hosts
-      --no-password        Skip password prompt (use SSH keys only)
+      --no-password        Skip password prompt (SSH keys only)
   -h, --help              Display help
 ```
 
-### Examples
+## 📖 Examples
 
-#### Extended Information in JSON Format
-
-```bash
-sudo namealive --extended --format json -o network_scan.json
-```
-
-#### Scanning Large Networks with Increased Parallelism
+### Extended scan with all protocols
 
 ```bash
-sudo namealive -r 10.0.0.0/16 -p 50 --verbose
+sudo namealive --extended --verbose
 ```
 
-#### Excluding Specific Addresses
+### Large network scan with high parallelism
 
 ```bash
-sudo namealive -r 192.168.1.0/24 --exclude 192.168.1.1 --exclude 192.168.1.254
+sudo namealive -r 10.0.0.0/16 -p 50 --timeout 5s
 ```
 
-#### CSV Output to File
+### Export results to CSV
 
 ```bash
-sudo namealive --format csv -o hosts.csv --extended
+namealive --format csv -o hosts.csv --extended
 ```
 
-## Output Formats
+### Exclude specific ranges
+
+```bash
+namealive -r 192.168.1.0/24 --exclude 192.168.1.1 --exclude 192.168.1.254
+```
+
+## 📤 Output Formats
 
 ### Table (default)
 
 ```
-+---------------+-------------+--------+
-|      IP       |  HOSTNAME   | STATUS |
-+---------------+-------------+--------+
-| 192.168.1.1   | router      | online |
-| 192.168.1.10  | workstation | online |
-| 192.168.1.20  | nas-server  | online |
-+---------------+-------------+--------+
++--------------+----------+--------+--------+
+|     IP       | HOSTNAME | STATUS | METHOD |
++--------------+----------+--------+--------+
+| 192.168.1.5  | server01 | online | mDNS   |
+| 192.168.1.10 | desktop  | online | NetBIOS|
+| 192.168.1.15 | laptop   | online | SSH    |
++--------------+----------+--------+--------+
 ```
 
 ### JSON
@@ -110,87 +158,50 @@ sudo namealive --format csv -o hosts.csv --extended
 ```json
 [
   {
-    "ip": "192.168.1.1",
-    "hostname": "router",
+    "ip": "192.168.1.5",
+    "hostname": "server01",
     "status": "online",
-    "response_time": "15ms",
+    "method": "mDNS",
+    "response_time": "2.1ms",
     "timestamp": "2024-01-20T10:30:00Z"
   }
 ]
 ```
 
-### CSV
+## 🔧 Performance Tuning
 
-```csv
-IP,Hostname,Status,Response Time
-192.168.1.1,router,online,15ms
-192.168.1.10,workstation,online,23ms
+- **Parallel connections**: Increase `-p` flag (default: 20, max recommended: 100)
+- **Timeout**: Reduce `--timeout` for faster scans of responsive networks
+- **Exclude ranges**: Use `--exclude` to skip known empty ranges
+
+## 🛡️ Security
+
+- Passwords are never stored or logged
+- SSH connections use standard Go crypto/ssh library
+- Host key verification disabled by default (for automation)
+- Supports standard SSH key locations
+
+## 📝 Building from Source
+
+```bash
+# Clone repository
+git clone https://github.com/dmikushin/namealive.git
+cd namealive
+
+# Build
+make build
+
+# Run tests
+make test
+
+# Install system-wide
+sudo make install
+
+# Cross-compile for different platforms
+make build-all
 ```
 
-## Extended Mode (--extended)
+## 📄 License
 
-When using the `--extended` flag, the utility collects additional information:
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-- **OS**: Operating system information (uname -a)
-- **Uptime**: System uptime
-- **Domain**: Domain name (if configured)
-- **MAC Address**: Network interface MAC address (from local ARP cache)
-
-## Authentication
-
-The utility supports multiple authentication methods in the following priority:
-
-1. **SSH Keys**: Automatically checks standard paths:
-   - `~/.ssh/id_rsa`
-   - `~/.ssh/id_ed25519`
-   - `~/.ssh/id_ecdsa`
-
-2. **Password**: Prompted once at startup and used for all hosts
-
-3. **Keyboard Interactive**: Support for systems with additional authentication
-
-## Performance
-
-- Default: 20 parallel connections
-- Can be increased to 50-100 for large networks using the `-p` flag
-- Each connection has a 20-second timeout (configurable via `--timeout`)
-
-## Troubleshooting
-
-### Permission Denied for ICMP Ping
-
-The utility requires permissions to send ICMP packets. Solutions:
-
-1. Run with sudo:
-   ```bash
-   sudo namealive
-   ```
-
-2. Add CAP_NET_RAW capability:
-   ```bash
-   sudo setcap cap_net_raw+ep ./namealive
-   ```
-
-### SSH Connection Issues
-
-- Ensure SSH service is running on target hosts
-- Verify username is correct
-- Check that keys or password are valid
-- Use a different port via `--port` if needed
-
-### Slow Scanning
-
-- Increase parallel connections: `-p 50`
-- Reduce timeout for unreachable hosts: `--timeout 5s`
-- Use a narrower IP range
-
-## Security
-
-- Passwords are entered in hidden mode and not stored
-- SSH connections use standard security mechanisms
-- SSH keys are recommended over passwords
-- Host key verification is disabled for first connections (InsecureIgnoreHostKey)
-
-## License
-
-MIT

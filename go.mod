@@ -1,4 +1,4 @@
-module namealive
+module github.com/dmikushin/namealive
 
 go 1.21
 
