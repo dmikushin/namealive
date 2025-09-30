@@ -2,11 +2,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"net"
 	"os"
 	"os/user"
@@ -16,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cheggaaa/pb/v3"
+	"github.com/hashicorp/mdns"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -41,16 +46,17 @@ type Config struct {
 }
 
 type Host struct {
-	IP          string    `json:"ip"`
-	Hostname    string    `json:"hostname"`
-	Status      string    `json:"status"`
-	Error       string    `json:"error,omitempty"`
-	OS          string    `json:"os,omitempty"`
-	Uptime      string    `json:"uptime,omitempty"`
-	Domain      string    `json:"domain,omitempty"`
-	MACAddress  string    `json:"mac_address,omitempty"`
-	ResponseTime string   `json:"response_time,omitempty"`
-	Timestamp   time.Time `json:"timestamp"`
+	IP           string    `json:"ip"`
+	Hostname     string    `json:"hostname"`
+	Status       string    `json:"status"`
+	Method       string    `json:"method,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	OS           string    `json:"os,omitempty"`
+	Uptime       string    `json:"uptime,omitempty"`
+	Domain       string    `json:"domain,omitempty"`
+	MACAddress   string    `json:"mac_address,omitempty"`
+	ResponseTime string    `json:"response_time,omitempty"`
+	Timestamp    time.Time `json:"timestamp"`
 }
 
 var (
@@ -85,6 +91,9 @@ func init() {
 }
 
 func main() {
+	// Suppress mdns library logs
+	log.SetOutput(ioutil.Discard)
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -270,19 +279,43 @@ func scanNetwork(ips []string) []Host {
 			bar.Set("status", fmt.Sprintf("Alive: %d | Connected: %d | Found: %s",
 				atomic.LoadInt32(&alive), atomic.LoadInt32(&connected), ip))
 
-			// Immediately try SSH connection
+			// Try fast methods first (mDNS, NetBIOS), then fallback to SSH
 			startTime := time.Now()
-			hostname, osInfo, uptime, domain, err := getSSHInfo(ip)
+
+			// First try mDNS (fastest for Linux/Mac)
+			hostname, method := getHostnameByMDNS(ip)
+
+			// If mDNS fails, try NetBIOS (for Windows)
+			if hostname == "" {
+				hostname, method = getHostnameByNetBIOS(ip)
+			}
+
+			// If both fail, fallback to SSH
+			var osInfo, uptime, domain string
+			var err error
+			if hostname == "" {
+				hostname, osInfo, uptime, domain, err = getSSHInfo(ip)
+				if err == nil {
+					method = "SSH"
+				}
+			} else {
+				// Got hostname via mDNS/NetBIOS, optionally get extended info via SSH
+				if config.Extended && config.Password != "" {
+					_, osInfo, uptime, domain, _ = getSSHInfo(ip)
+				}
+			}
+
 			responseTime := time.Since(startTime)
 
-			if err != nil {
+			if hostname == "" && err != nil {
 				host.Status = "error"
 				host.Error = err.Error()
-				bar.Set("status", fmt.Sprintf("Alive: %d | Connected: %d | Failed SSH: %s",
+				bar.Set("status", fmt.Sprintf("Alive: %d | Connected: %d | Failed: %s",
 					atomic.LoadInt32(&alive), atomic.LoadInt32(&connected), ip))
-			} else {
+			} else if hostname != "" {
 				host.Status = "online"
 				host.Hostname = hostname
+				host.Method = method
 				host.ResponseTime = responseTime.String()
 				atomic.AddInt32(&connected, 1)
 
@@ -293,8 +326,8 @@ func scanNetwork(ips []string) []Host {
 					host.MACAddress = getMACAddress(ip)
 				}
 
-				bar.Set("status", fmt.Sprintf("Alive: %d | Connected: %d | ✓ %s: %s",
-					atomic.LoadInt32(&alive), atomic.LoadInt32(&connected), ip, hostname))
+				bar.Set("status", fmt.Sprintf("Alive: %d | Connected: %d | ✓ %s: %s (%s)",
+					atomic.LoadInt32(&alive), atomic.LoadInt32(&connected), ip, hostname, method))
 			}
 
 			mu.Lock()
@@ -385,6 +418,147 @@ func pingFallback(ip string) bool {
 	return false
 }
 
+
+// getHostnameByMDNS tries to resolve hostname using mDNS (Avahi/Bonjour)
+func getHostnameByMDNS(ip string) (string, string) {
+	// Create mDNS query
+	entriesCh := make(chan *mdns.ServiceEntry, 10)
+
+	// Start mDNS query in background
+	go func() {
+		params := &mdns.QueryParam{
+			Service: "_workstation._tcp",
+			Domain:  "local",
+			Timeout: 2 * time.Second,
+			Entries: entriesCh,
+			DisableIPv6: true,
+		}
+		mdns.Query(params)
+		close(entriesCh)
+	}()
+
+	// Check results for matching IP
+	for entry := range entriesCh {
+		if entry.AddrV4 != nil && entry.AddrV4.String() == ip {
+			// Remove .local suffix if present
+			hostname := strings.TrimSuffix(entry.Host, ".local.")
+			if hostname == "" {
+				hostname = entry.Name
+			}
+			return hostname, "mDNS"
+		}
+		// Also check IPv6
+		if entry.AddrV6 != nil && entry.AddrV6.String() == ip {
+			hostname := strings.TrimSuffix(entry.Host, ".local.")
+			if hostname == "" {
+				hostname = entry.Name
+			}
+			return hostname, "mDNS"
+		}
+	}
+
+	// Alternative: try reverse mDNS lookup
+	// Convert IP to hostname.local format
+	ipAddr := net.ParseIP(ip)
+	if ipAddr != nil {
+		// Try direct resolution
+		resolver := &net.Resolver{}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		names, _ := resolver.LookupAddr(ctx, ip)
+		for _, name := range names {
+			if strings.HasSuffix(name, ".local.") {
+				hostname := strings.TrimSuffix(name, ".local.")
+				hostname = strings.TrimSuffix(hostname, ".")
+				if hostname != "" {
+					return hostname, "mDNS"
+				}
+			}
+		}
+	}
+
+	return "", ""
+}
+
+// getHostnameByNetBIOS tries to resolve hostname using NetBIOS Name Service
+func getHostnameByNetBIOS(ip string) (string, string) {
+	conn, err := net.DialTimeout("udp", fmt.Sprintf("%s:137", ip), 2*time.Second)
+	if err != nil {
+		return "", ""
+	}
+	defer conn.Close()
+
+	// Create NetBIOS Name Service query packet
+	// Transaction ID (2 bytes) + Flags (2 bytes) + Questions (2 bytes) + Answer RRs (2 bytes) +
+	// Authority RRs (2 bytes) + Additional RRs (2 bytes) + Query
+	var query bytes.Buffer
+
+	// Transaction ID
+	binary.Write(&query, binary.BigEndian, uint16(0x1234))
+	// Flags: Standard query
+	binary.Write(&query, binary.BigEndian, uint16(0x0010))
+	// Questions: 1
+	binary.Write(&query, binary.BigEndian, uint16(0x0001))
+	// Answer RRs: 0
+	binary.Write(&query, binary.BigEndian, uint16(0x0000))
+	// Authority RRs: 0
+	binary.Write(&query, binary.BigEndian, uint16(0x0000))
+	// Additional RRs: 0
+	binary.Write(&query, binary.BigEndian, uint16(0x0000))
+
+	// Query: CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA (encoded "*")
+	// This queries for all names
+	query.WriteString(" CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	// Null terminator
+	query.WriteByte(0x00)
+	// Type: NBSTAT
+	binary.Write(&query, binary.BigEndian, uint16(0x0021))
+	// Class: IN
+	binary.Write(&query, binary.BigEndian, uint16(0x0001))
+
+	// Send query
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write(query.Bytes()); err != nil {
+		return "", ""
+	}
+
+	// Read response
+	buffer := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buffer)
+	if err != nil || n < 62 {
+		return "", ""
+	}
+
+	// Parse NetBIOS names from response
+	// Skip header (first 56 bytes) and get to the name list
+	if n > 56 {
+		nameCount := int(buffer[56])
+		offset := 57
+
+		for i := 0; i < nameCount && offset+18 <= n; i++ {
+			// Each name entry is 18 bytes: 15 bytes name + 1 byte type + 2 bytes flags
+			nameBytes := buffer[offset : offset+15]
+			nameType := buffer[offset+15]
+
+			// Look for unique workstation name (type 0x00 with unique flag)
+			// or computer name (type 0x20)
+			if nameType == 0x00 || nameType == 0x20 {
+				// Decode NetBIOS name
+				name := strings.TrimSpace(string(nameBytes))
+				// Remove padding and non-printable characters
+				name = strings.TrimRight(name, " \x00")
+				if name != "" && !strings.Contains(name, "\x00") {
+					return name, "NetBIOS"
+				}
+			}
+			offset += 18
+		}
+	}
+
+	return "", ""
+}
 
 func getSSHInfo(ip string) (hostname, osInfo, uptime, domain string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
@@ -515,7 +689,7 @@ func outputResults(results []Host) error {
 		var buf strings.Builder
 		writer := csv.NewWriter(&buf)
 
-		headers := []string{"IP", "Hostname", "Status", "Response Time"}
+		headers := []string{"IP", "Hostname", "Status", "Method", "Response Time"}
 		if config.Extended {
 			headers = append(headers, "OS", "Uptime", "Domain", "MAC Address")
 		}
@@ -523,7 +697,7 @@ func outputResults(results []Host) error {
 		writer.Write(headers)
 
 		for _, host := range results {
-			row := []string{host.IP, host.Hostname, host.Status, host.ResponseTime}
+			row := []string{host.IP, host.Hostname, host.Status, host.Method, host.ResponseTime}
 			if config.Extended {
 				row = append(row, host.OS, host.Uptime, host.Domain, host.MACAddress)
 			}
@@ -541,7 +715,7 @@ func outputResults(results []Host) error {
 		}
 
 		table := tablewriter.NewWriter(writer)
-		headers := []string{"IP", "Hostname", "Status"}
+		headers := []string{"IP", "Hostname", "Status", "Method"}
 		if config.Extended {
 			headers = append(headers, "OS", "Uptime", "MAC")
 		}
@@ -563,7 +737,7 @@ func outputResults(results []Host) error {
 				statusColor = host.Status
 			}
 
-			row := []string{host.IP, host.Hostname, statusColor}
+			row := []string{host.IP, host.Hostname, statusColor, host.Method}
 			if config.Extended {
 				osShort := host.OS
 				if len(osShort) > 30 {
