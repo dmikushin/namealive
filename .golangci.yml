@@ -1,0 +1,58 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gosec
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
+
+  staticcheck:
+    checks: ["all", "-SA1019"]  # Disable deprecated import warning temporarily
+
+  gosec:
+    excludes:
+      - G104  # Unhandled errors in deferred calls
+
+  gofmt:
+    simplify: true
+
+  goimports:
+    local-prefixes: github.com/dmikushin/namealive
+
+issues:
+  exclude-dirs:
+    - vendor
+
+  exclude-rules:
+    # Exclude some linters from running on test files
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+
+    # Allow unused parameters in test functions
+    - path: _test\.go
+      text: "unused parameter"
+      linters:
+        - revive
+
+  max-issues-per-linter: 0
+  max-same-issues: 0

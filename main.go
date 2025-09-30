@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -30,19 +29,19 @@ import (
 )
 
 type Config struct {
-	IPRange       string
-	User          string
-	Password      string
-	Port          int
-	Parallel      int
-	Timeout       time.Duration
-	Format        string
-	OutputFile    string
-	Verbose       bool
-	Extended      bool
-	ExcludeRanges []string
+	IPRange        string
+	User           string
+	Password       string
+	Port           int
+	Parallel       int
+	Timeout        time.Duration
+	Format         string
+	OutputFile     string
+	Verbose        bool
+	Extended       bool
+	ExcludeRanges  []string
 	IncludeOffline bool
-	NoPassword    bool
+	NoPassword     bool
 }
 
 type Host struct {
@@ -60,7 +59,7 @@ type Host struct {
 }
 
 var (
-	config Config
+	config  Config
 	rootCmd = &cobra.Command{
 		Use:   "namealive",
 		Short: "Network host discovery and identification tool",
@@ -92,7 +91,7 @@ func init() {
 
 func main() {
 	// Suppress mdns library logs
-	log.SetOutput(ioutil.Discard)
+	log.SetOutput(io.Discard)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -100,7 +99,7 @@ func main() {
 	}
 }
 
-func run(cmd *cobra.Command, args []string) error {
+func run(_ *cobra.Command, _ []string) error {
 	if config.Verbose {
 		fmt.Printf("Starting scan of range: %s\n", config.IPRange)
 	}
@@ -378,7 +377,9 @@ func isAlive(ip string) bool {
 	}
 
 	rb := make([]byte, 1500)
-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		log.Printf("Failed to set read deadline: %v", err)
+	}
 	n, _, err := c.ReadFrom(rb)
 	if err != nil {
 		return false
@@ -418,7 +419,6 @@ func pingFallback(ip string) bool {
 	return false
 }
 
-
 // getHostnameByMDNS tries to resolve hostname using mDNS (Avahi/Bonjour)
 func getHostnameByMDNS(ip string) (string, string) {
 	// Create mDNS query
@@ -427,13 +427,15 @@ func getHostnameByMDNS(ip string) (string, string) {
 	// Start mDNS query in background
 	go func() {
 		params := &mdns.QueryParam{
-			Service: "_workstation._tcp",
-			Domain:  "local",
-			Timeout: 2 * time.Second,
-			Entries: entriesCh,
+			Service:     "_workstation._tcp",
+			Domain:      "local",
+			Timeout:     2 * time.Second,
+			Entries:     entriesCh,
 			DisableIPv6: true,
 		}
-		mdns.Query(params)
+		if err := mdns.Query(params); err != nil {
+			log.Printf("mDNS query failed: %v", err)
+		}
 		close(entriesCh)
 	}()
 
@@ -495,17 +497,35 @@ func getHostnameByNetBIOS(ip string) (string, string) {
 	var query bytes.Buffer
 
 	// Transaction ID
-	binary.Write(&query, binary.BigEndian, uint16(0x1234))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x1234)); err != nil {
+		log.Printf("Failed to write NetBIOS transaction ID: %v", err)
+		return "", ""
+	}
 	// Flags: Standard query
-	binary.Write(&query, binary.BigEndian, uint16(0x0010))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x0010)); err != nil {
+		log.Printf("Failed to write NetBIOS flags: %v", err)
+		return "", ""
+	}
 	// Questions: 1
-	binary.Write(&query, binary.BigEndian, uint16(0x0001))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x0001)); err != nil {
+		log.Printf("Failed to write NetBIOS questions: %v", err)
+		return "", ""
+	}
 	// Answer RRs: 0
-	binary.Write(&query, binary.BigEndian, uint16(0x0000))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x0000)); err != nil {
+		log.Printf("Failed to write NetBIOS answer RRs: %v", err)
+		return "", ""
+	}
 	// Authority RRs: 0
-	binary.Write(&query, binary.BigEndian, uint16(0x0000))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x0000)); err != nil {
+		log.Printf("Failed to write NetBIOS authority RRs: %v", err)
+		return "", ""
+	}
 	// Additional RRs: 0
-	binary.Write(&query, binary.BigEndian, uint16(0x0000))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x0000)); err != nil {
+		log.Printf("Failed to write NetBIOS additional RRs: %v", err)
+		return "", ""
+	}
 
 	// Query: CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA (encoded "*")
 	// This queries for all names
@@ -513,19 +533,29 @@ func getHostnameByNetBIOS(ip string) (string, string) {
 	// Null terminator
 	query.WriteByte(0x00)
 	// Type: NBSTAT
-	binary.Write(&query, binary.BigEndian, uint16(0x0021))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x0021)); err != nil {
+		log.Printf("Failed to write NetBIOS qtype: %v", err)
+		return "", ""
+	}
 	// Class: IN
-	binary.Write(&query, binary.BigEndian, uint16(0x0001))
+	if err := binary.Write(&query, binary.BigEndian, uint16(0x0001)); err != nil {
+		log.Printf("Failed to write NetBIOS qclass: %v", err)
+		return "", ""
+	}
 
 	// Send query
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		log.Printf("Failed to set write deadline: %v", err)
+	}
 	if _, err := conn.Write(query.Bytes()); err != nil {
 		return "", ""
 	}
 
 	// Read response
 	buffer := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		log.Printf("Failed to set read deadline: %v", err)
+	}
 	n, err := conn.Read(buffer)
 	if err != nil || n < 62 {
 		return "", ""
@@ -565,10 +595,10 @@ func getSSHInfo(ip string) (hostname, osInfo, uptime, domain string, err error) 
 	defer cancel()
 
 	sshConfig := &ssh.ClientConfig{
-		User: config.User,
-		Auth: []ssh.AuthMethod{},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout: config.Timeout,  // Use full timeout for SSH connection
+		User:            config.User,
+		Auth:            []ssh.AuthMethod{},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // This is for hostname discovery only
+		Timeout:         config.Timeout,              // Use full timeout for SSH connection
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -591,7 +621,7 @@ func getSSHInfo(ip string) (hostname, osInfo, uptime, domain string, err error) 
 	}
 
 	sshConfig.Auth = append(sshConfig.Auth, ssh.KeyboardInteractive(
-		func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+		func(_, _ string, questions []string, _ []bool) ([]string, error) {
 			answers := make([]string, len(questions))
 			for i := range questions {
 				answers[i] = config.Password
@@ -694,7 +724,10 @@ func outputResults(results []Host) error {
 			headers = append(headers, "OS", "Uptime", "Domain", "MAC Address")
 		}
 		headers = append(headers, "Error")
-		writer.Write(headers)
+		if err := writer.Write(headers); err != nil {
+			log.Printf("Failed to write CSV headers: %v", err)
+			return err
+		}
 
 		for _, host := range results {
 			row := []string{host.IP, host.Hostname, host.Status, host.Method, host.ResponseTime}
@@ -702,7 +735,10 @@ func outputResults(results []Host) error {
 				row = append(row, host.OS, host.Uptime, host.Domain, host.MACAddress)
 			}
 			row = append(row, host.Error)
-			writer.Write(row)
+			if err := writer.Write(row); err != nil {
+				log.Printf("Failed to write CSV row: %v", err)
+				return err
+			}
 		}
 		writer.Flush()
 		output = buf.String()
@@ -757,7 +793,7 @@ func outputResults(results []Host) error {
 	}
 
 	if config.OutputFile != "" {
-		return os.WriteFile(config.OutputFile, []byte(output), 0644)
+		return os.WriteFile(config.OutputFile, []byte(output), 0600)
 	}
 
 	if config.Format != "table" {
