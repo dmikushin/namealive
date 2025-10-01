@@ -1,7 +1,7 @@
 # .goreleaser.yml
 # GoReleaser configuration for automated releases
 
-version: 2
+version: 1
 
 before:
   hooks:
