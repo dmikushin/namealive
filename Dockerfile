@@ -2,7 +2,7 @@
 FROM alpine:latest
 
 # Install runtime dependencies
-RUN apk --no-cache add ca-certificates iputils
+RUN apk --no-cache add ca-certificates iputils libcap
 
 # Create non-root user
 RUN addgroup -g 1000 -S namealive && \
