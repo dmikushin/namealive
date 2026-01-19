@@ -10,6 +10,7 @@ High-performance network host discovery and identification tool using mDNS, NetB
 
 - 🚀 **Fast discovery** via mDNS (Linux/Mac) and NetBIOS (Windows)
 - 🔍 **Smart fallback** to SSH when needed
+- 🌐 **Auto-detection** of network ranges from local interfaces
 - 🔑 **Flexible authentication** - SSH keys and passwords
 - 📊 **Multiple output formats** - table, JSON, CSV
 - 🎯 **Parallel scanning** with configurable concurrency
@@ -60,10 +61,16 @@ sudo mv namealive /usr/local/bin/
 ## 🚀 Quick Start
 
 ```bash
-# Scan default range (192.168.1.1-192.168.1.250)
+# Auto-detect networks from local interfaces and scan
 sudo namealive
 
-# Scan specific range
+# Show detected network ranges without scanning
+sudo namealive --list-ranges
+
+# Scan specific interface only
+sudo namealive --interface eth0
+
+# Scan specific range (explicit)
 sudo namealive -r 10.0.0.1-10.0.0.100
 
 # CIDR notation
@@ -98,7 +105,11 @@ NameAlive uses a multi-protocol approach for maximum speed and compatibility:
 
 ```
 Flags:
-  -r, --range string       IP range to scan (default "192.168.1.1-192.168.1.250")
+  -r, --range string       IP range to scan (auto-detect from interfaces if not specified)
+      --interface strings  Filter by network interface name (can be specified multiple times)
+      --list-ranges        Show detected IP ranges without scanning
+      --max-cidr int       Maximum CIDR prefix length (default 24 = 256 addresses)
+      --force              Force scanning even if range exceeds --max-cidr limit
   -u, --user string        SSH username (default: current user)
       --port int           SSH port (default 22)
   -p, --parallel int       Number of parallel connections (default 20)
@@ -110,7 +121,27 @@ Flags:
       --exclude strings    Exclude IP ranges
       --include-offline    Include offline hosts
       --no-password        Skip password prompt (SSH keys only)
-  -h, --help              Display help
+  -h, --help               Display help
+```
+
+### Auto-detection Behavior
+
+When `-r/--range` is not specified, namealive automatically detects network ranges from local interfaces:
+
+- **Loopback interfaces** (127.x.x.x) are skipped
+- **Link-local addresses** (169.254.x.x) are skipped
+- **Inactive interfaces** are skipped
+- Networks larger than `--max-cidr` (default /24) require `--force` flag
+
+```bash
+# See what networks will be scanned
+namealive --list-ranges
+
+# Scan only specific interface(s)
+namealive --interface eth0 --interface wlan0
+
+# Allow scanning larger networks (use with caution!)
+namealive --max-cidr 20 --force
 ```
 
 ## 📖 Examples
@@ -124,7 +155,8 @@ sudo namealive --extended --verbose
 ### Large network scan with high parallelism
 
 ```bash
-sudo namealive -r 10.0.0.0/16 -p 50 --timeout 5s
+# Requires --force for networks larger than /24
+sudo namealive -r 10.0.0.0/16 -p 50 --timeout 5s --force
 ```
 
 ### Export results to CSV

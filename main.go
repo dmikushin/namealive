@@ -42,6 +42,11 @@ type Config struct {
 	ExcludeRanges  []string
 	IncludeOffline bool
 	NoPassword     bool
+	// New fields for auto-detection
+	Interfaces []string
+	ListRanges bool
+	MaxCIDR    int
+	Force      bool
 }
 
 type Host struct {
@@ -75,7 +80,7 @@ func init() {
 		username = currentUser.Username
 	}
 
-	rootCmd.Flags().StringVarP(&config.IPRange, "range", "r", "192.168.1.1-192.168.1.250", "IP range to scan")
+	rootCmd.Flags().StringVarP(&config.IPRange, "range", "r", "", "IP range to scan (auto-detect from interfaces if not specified)")
 	rootCmd.Flags().StringVarP(&config.User, "user", "u", username, "SSH username")
 	rootCmd.Flags().IntVarP(&config.Port, "port", "", 22, "SSH port")
 	rootCmd.Flags().IntVarP(&config.Parallel, "parallel", "p", 20, "Number of parallel connections")
@@ -87,6 +92,11 @@ func init() {
 	rootCmd.Flags().StringSliceVar(&config.ExcludeRanges, "exclude", []string{}, "Exclude IP ranges")
 	rootCmd.Flags().BoolVar(&config.IncludeOffline, "include-offline", false, "Include offline hosts")
 	rootCmd.Flags().BoolVar(&config.NoPassword, "no-password", false, "Skip password prompt (use SSH keys only)")
+	// New flags for auto-detection
+	rootCmd.Flags().StringSliceVar(&config.Interfaces, "interface", []string{}, "Filter by network interface name (can be specified multiple times)")
+	rootCmd.Flags().BoolVar(&config.ListRanges, "list-ranges", false, "Show detected IP ranges without scanning")
+	rootCmd.Flags().IntVar(&config.MaxCIDR, "max-cidr", 24, "Maximum CIDR prefix length (minimum network size, e.g., 24 = /24 = 256 addresses)")
+	rootCmd.Flags().BoolVar(&config.Force, "force", false, "Force scanning even if range exceeds --max-cidr limit")
 }
 
 func main() {
@@ -100,18 +110,113 @@ func main() {
 }
 
 func run(_ *cobra.Command, _ []string) error {
-	if config.Verbose {
-		fmt.Printf("Starting scan of range: %s\n", config.IPRange)
+	var ips []string
+	var detectedRanges []NetworkRange
+
+	// Determine IP ranges to scan
+	if config.IPRange != "" {
+		// Explicit range specified via -r flag
+		if len(config.Interfaces) > 0 {
+			fmt.Fprintln(os.Stderr, "⚠️  Warning: --interface is ignored when -r/--range is specified")
+		}
+
+		if config.Verbose {
+			fmt.Printf("Using explicit range: %s\n", config.IPRange)
+		}
+
+		// Validate CIDR size for explicit range
+		prefix, err := getCIDRPrefix(config.IPRange)
+		if err != nil {
+			return fmt.Errorf("failed to parse IP range: %w", err)
+		}
+
+		if err := validateCIDRSize(prefix, config.MaxCIDR, config.Force); err != nil {
+			return err
+		}
+
+		parsedIPs, err := parseIPRange(config.IPRange)
+		if err != nil {
+			return fmt.Errorf("failed to parse IP range: %w", err)
+		}
+		ips = parsedIPs
+
+		// Create a synthetic NetworkRange for --list-ranges output
+		detectedRanges = []NetworkRange{{
+			Interface: "(explicit)",
+			CIDR:      config.IPRange,
+			IPCount:   len(parsedIPs),
+			Prefix:    prefix,
+		}}
+	} else {
+		// Auto-detect from network interfaces
+		var err error
+		detectedRanges, err = getLocalNetworkRanges(config.Interfaces)
+		if err != nil {
+			return fmt.Errorf("failed to detect network ranges: %w", err)
+		}
+
+		if config.Verbose {
+			fmt.Printf("Detected %d network range(s) from interfaces\n", len(detectedRanges))
+		}
+
+		// For --list-ranges, skip validation and IP collection
+		if !config.ListRanges {
+			// Validate and collect IPs from all detected ranges
+			for _, nr := range detectedRanges {
+				if err := validateCIDRSize(nr.Prefix, config.MaxCIDR, config.Force); err != nil {
+					return fmt.Errorf("interface %s (%s): %w", nr.Interface, nr.CIDR, err)
+				}
+
+				rangeIPs, err := parseIPRange(nr.CIDR)
+				if err != nil {
+					return fmt.Errorf("failed to parse range %s: %w", nr.CIDR, err)
+				}
+				ips = append(ips, rangeIPs...)
+			}
+		}
 	}
 
-	ips, err := parseIPRange(config.IPRange)
-	if err != nil {
-		return fmt.Errorf("failed to parse IP range: %w", err)
+	// Handle --list-ranges: show ranges and exit
+	if config.ListRanges {
+		fmt.Println("📋 Detected network ranges:")
+		fmt.Println()
+		totalIPs := 0
+		for _, nr := range detectedRanges {
+			fmt.Printf("  Interface: %-12s  CIDR: %-18s  Prefix: /%-2d  Hosts: %d\n",
+				nr.Interface, nr.CIDR, nr.Prefix, nr.IPCount)
+			totalIPs += nr.IPCount
+		}
+		fmt.Println()
+		fmt.Printf("Total: %d range(s), %d IP addresses to scan\n", len(detectedRanges), totalIPs)
+
+		if !config.Force {
+			for _, nr := range detectedRanges {
+				if nr.Prefix < config.MaxCIDR {
+					fmt.Printf("\n⚠️  Warning: some ranges exceed --max-cidr /%d limit. Use --force to scan anyway.\n", config.MaxCIDR)
+					break
+				}
+			}
+		}
+		return nil
 	}
 
 	ips = excludeIPs(ips, config.ExcludeRanges)
 
-	fmt.Printf("🔍 Scanning %d IP addresses...\n", len(ips))
+	// Remove duplicates (in case ranges overlap)
+	ips = removeDuplicateIPs(ips)
+
+	// Print scan summary
+	if len(detectedRanges) == 1 {
+		fmt.Printf("🔍 Scanning %d IP addresses from %s (%s)...\n",
+			len(ips), detectedRanges[0].Interface, detectedRanges[0].CIDR)
+	} else {
+		fmt.Printf("🔍 Scanning %d IP addresses from %d networks...\n", len(ips), len(detectedRanges))
+		if config.Verbose {
+			for _, nr := range detectedRanges {
+				fmt.Printf("   - %s: %s\n", nr.Interface, nr.CIDR)
+			}
+		}
+	}
 
 	if !config.NoPassword {
 		if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -205,6 +310,157 @@ func incrementIP(ip net.IP) {
 	}
 }
 
+// NetworkRange represents a detected network range from an interface
+type NetworkRange struct {
+	Interface string
+	CIDR      string
+	IPCount   int
+	Prefix    int
+}
+
+// getLocalNetworkRanges detects network ranges from local interfaces
+func getLocalNetworkRanges(filterInterfaces []string) ([]NetworkRange, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
+	}
+
+	// Build filter map for quick lookup
+	filterMap := make(map[string]bool)
+	for _, name := range filterInterfaces {
+		filterMap[name] = true
+	}
+
+	var ranges []NetworkRange
+
+	for _, iface := range interfaces {
+		// Skip loopback interfaces
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		// Skip interfaces that are not up
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		// Apply interface filter if specified
+		if len(filterMap) > 0 && !filterMap[iface.Name] {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+
+			// Only IPv4 for now
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil {
+				continue
+			}
+
+			// Skip loopback addresses (127.x.x.x)
+			if ip4[0] == 127 {
+				continue
+			}
+
+			// Skip link-local addresses (169.254.x.x)
+			if ip4[0] == 169 && ip4[1] == 254 {
+				continue
+			}
+
+			// Calculate prefix length
+			ones, _ := ipnet.Mask.Size()
+
+			// Calculate number of hosts in network
+			hostBits := 32 - ones
+			ipCount := 1 << hostBits
+			if ipCount > 2 {
+				ipCount -= 2 // Subtract network and broadcast addresses
+			}
+
+			ranges = append(ranges, NetworkRange{
+				Interface: iface.Name,
+				CIDR:      ipnet.String(),
+				IPCount:   ipCount,
+				Prefix:    ones,
+			})
+		}
+	}
+
+	if len(ranges) == 0 {
+		if len(filterInterfaces) > 0 {
+			return nil, fmt.Errorf("no valid networks found for interfaces: %v", filterInterfaces)
+		}
+		return nil, fmt.Errorf("no valid network interfaces found")
+	}
+
+	return ranges, nil
+}
+
+// validateCIDRSize checks if network size is within allowed limit
+func validateCIDRSize(prefix, maxCIDR int, force bool) error {
+	if prefix < maxCIDR && !force {
+		hostBits := 32 - prefix
+		ipCount := 1 << hostBits
+		return fmt.Errorf("network /%d contains %d addresses, which exceeds --max-cidr /%d limit (%d addresses). Use --force to override",
+			prefix, ipCount, maxCIDR, 1<<(32-maxCIDR))
+	}
+	return nil
+}
+
+// getCIDRPrefix extracts prefix length from CIDR string or estimates it from range
+func getCIDRPrefix(ipRange string) (int, error) {
+	if strings.Contains(ipRange, "/") {
+		_, ipnet, err := net.ParseCIDR(ipRange)
+		if err != nil {
+			return 0, err
+		}
+		ones, _ := ipnet.Mask.Size()
+		return ones, nil
+	}
+
+	if strings.Contains(ipRange, "-") {
+		parts := strings.Split(ipRange, "-")
+		if len(parts) != 2 {
+			return 0, fmt.Errorf("invalid range format")
+		}
+
+		startIP := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+		endIP := net.ParseIP(strings.TrimSpace(parts[1])).To4()
+
+		if startIP == nil || endIP == nil {
+			return 0, fmt.Errorf("invalid IP addresses in range")
+		}
+
+		// Calculate number of IPs in range
+		start := binary.BigEndian.Uint32(startIP)
+		end := binary.BigEndian.Uint32(endIP)
+		if end < start {
+			return 0, fmt.Errorf("end IP is less than start IP")
+		}
+		count := end - start + 1
+
+		// Estimate equivalent CIDR prefix
+		// Find smallest power of 2 that contains the range
+		bits := 0
+		for (1 << bits) < int(count) {
+			bits++
+		}
+		return 32 - bits, nil
+	}
+
+	// Single IP
+	return 32, nil
+}
+
 func excludeIPs(ips []string, excludeRanges []string) []string {
 	if len(excludeRanges) == 0 {
 		return ips
@@ -223,6 +479,20 @@ func excludeIPs(ips []string, excludeRanges []string) []string {
 	var result []string
 	for _, ip := range ips {
 		if !excluded[ip] {
+			result = append(result, ip)
+		}
+	}
+	return result
+}
+
+// removeDuplicateIPs removes duplicate IP addresses while preserving order
+func removeDuplicateIPs(ips []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(ips))
+
+	for _, ip := range ips {
+		if !seen[ip] {
+			seen[ip] = true
 			result = append(result, ip)
 		}
 	}
