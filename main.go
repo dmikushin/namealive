@@ -92,6 +92,7 @@ func init() {
 	rootCmd.Flags().StringSliceVar(&config.ExcludeRanges, "exclude", []string{}, "Exclude IP ranges")
 	rootCmd.Flags().BoolVar(&config.IncludeOffline, "include-offline", false, "Include offline hosts")
 	rootCmd.Flags().BoolVar(&config.NoPassword, "no-password", false, "Skip password prompt (use SSH keys only)")
+	rootCmd.Flags().StringVar(&config.Password, "password", "", "SSH password (can also use NAMEALIVE_PASSWORD env var)")
 	// New flags for auto-detection
 	rootCmd.Flags().StringSliceVar(&config.Interfaces, "interface", []string{}, "Filter by network interface name (can be specified multiple times)")
 	rootCmd.Flags().BoolVar(&config.ListRanges, "list-ranges", false, "Show detected IP ranges without scanning")
@@ -219,19 +220,26 @@ func run(_ *cobra.Command, _ []string) error {
 	}
 
 	if !config.NoPassword {
-		if term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Print("Enter SSH password (will be hidden): ")
-			password, err := term.ReadPassword(int(os.Stdin.Fd()))
-			if err != nil {
-				return fmt.Errorf("failed to read password: %w", err)
+		// Check environment variable if password not provided via flag
+		if config.Password == "" {
+			config.Password = os.Getenv("NAMEALIVE_PASSWORD")
+		}
+
+		// If still no password, try to read from terminal
+		if config.Password == "" {
+			if term.IsTerminal(int(os.Stdin.Fd())) {
+				fmt.Print("Enter SSH password (will be hidden): ")
+				password, err := term.ReadPassword(int(os.Stdin.Fd()))
+				if err != nil {
+					return fmt.Errorf("failed to read password: %w", err)
+				}
+				fmt.Println()
+				config.Password = string(password)
+			} else {
+				if config.Verbose {
+					fmt.Println("No terminal available and no password provided, using SSH keys only")
+				}
 			}
-			fmt.Println()
-			config.Password = string(password)
-		} else {
-			if config.Verbose {
-				fmt.Println("No terminal available, skipping password prompt")
-			}
-			config.NoPassword = true
 		}
 	}
 
