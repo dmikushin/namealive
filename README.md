@@ -126,18 +126,19 @@ Flags:
 
 ### Auto-detection Behavior
 
-When `-r/--range` is not specified, namealive automatically detects network ranges from local interfaces:
+When `-r/--range` is not specified, namealive automatically detects the network to scan:
 
+- **Default gateway interface** is used (the interface through which the machine accesses the internet)
 - **Loopback interfaces** (127.x.x.x) are skipped
 - **Link-local addresses** (169.254.x.x) are skipped
-- **Inactive interfaces** are skipped
+- **Virtual interfaces** (Docker, bridges) are not selected by default
 - Networks larger than `--max-cidr` (default /24) require `--force` flag
 
 ```bash
-# See what networks will be scanned
+# See what networks will be scanned (uses default gateway interface)
 namealive --list-ranges
 
-# Scan only specific interface(s)
+# Scan specific interface(s) instead of default gateway
 namealive --interface eth0 --interface wlan0
 
 # Allow scanning larger networks (use with caution!)

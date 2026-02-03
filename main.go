@@ -326,7 +326,39 @@ type NetworkRange struct {
 	Prefix    int
 }
 
+// getDefaultGatewayInterface returns the name of the network interface used for the default route
+// This is the interface through which the machine connects to the internet
+func getDefaultGatewayInterface() (string, error) {
+	// Read /proc/net/route to find the default gateway
+	file, err := os.Open("/proc/net/route")
+	if err != nil {
+		return "", fmt.Errorf("failed to open /proc/net/route: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	// Skip header line
+	scanner.Scan()
+
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+
+		// Destination field is at index 1
+		// Default route has destination 00000000
+		if fields[1] == "00000000" {
+			// Interface name is at index 0
+			return fields[0], nil
+		}
+	}
+
+	return "", fmt.Errorf("no default gateway found")
+}
+
 // getLocalNetworkRanges detects network ranges from local interfaces
+// When filterInterfaces is empty, it uses only the default gateway interface (the one with internet access)
 func getLocalNetworkRanges(filterInterfaces []string) ([]NetworkRange, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -337,6 +369,24 @@ func getLocalNetworkRanges(filterInterfaces []string) ([]NetworkRange, error) {
 	filterMap := make(map[string]bool)
 	for _, name := range filterInterfaces {
 		filterMap[name] = true
+	}
+
+	// If no explicit interface filter is provided, use the default gateway interface
+	// This is the interface through which the machine accesses the internet
+	if len(filterMap) == 0 {
+		defaultIface, err := getDefaultGatewayInterface()
+		if err != nil {
+			// Fall back to scanning all interfaces if we can't determine the default gateway
+			if config.Verbose {
+				fmt.Printf("Warning: could not determine default gateway interface: %v\n", err)
+				fmt.Println("Falling back to scanning all interfaces")
+			}
+		} else {
+			if config.Verbose {
+				fmt.Printf("Using default gateway interface: %s\n", defaultIface)
+			}
+			filterMap[defaultIface] = true
+		}
 	}
 
 	var ranges []NetworkRange
